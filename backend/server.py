@@ -1,89 +1,138 @@
-from fastapi import FastAPI, APIRouter
-from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
+"""
+FastAPI proxy server that starts NestJS backend and proxies all requests.
+Version 2.0 - Improved cold start handling
+"""
+import subprocess
 import os
+import sys
+import time
+import httpx
+from fastapi import FastAPI, Request, Response
+from fastapi.responses import JSONResponse
+from contextlib import asynccontextmanager
+import asyncio
 import logging
-from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List
-import uuid
-from datetime import datetime, timezone
-
-
-ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
-
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
-
-# Create the main app without a prefix
-app = FastAPI()
-
-# Create a router with the /api prefix
-api_router = APIRouter(prefix="/api")
-
-
-# Define Models
-class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")  # Ignore MongoDB's _id field
-    
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-class StatusCheckCreate(BaseModel):
-    client_name: str
-
-# Add your routes to the router instead of directly to app
-@api_router.get("/")
-async def root():
-    return {"message": "Hello World"}
-
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.model_dump()
-    status_obj = StatusCheck(**status_dict)
-    
-    # Convert to dict and serialize datetime to ISO string for MongoDB
-    doc = status_obj.model_dump()
-    doc['timestamp'] = doc['timestamp'].isoformat()
-    
-    _ = await db.status_checks.insert_one(doc)
-    return status_obj
-
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    # Exclude MongoDB's _id field from the query results
-    status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
-    
-    # Convert ISO string timestamps back to datetime objects
-    for check in status_checks:
-        if isinstance(check['timestamp'], str):
-            check['timestamp'] = datetime.fromisoformat(check['timestamp'])
-    
-    return status_checks
-
-# Include the router in the main app
-app.include_router(api_router)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("BibiProxy")
 
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()
+NESTJS_PORT = 8002  # Internal NestJS port
+STARTUP_TIMEOUT = 60  # seconds
+HEALTH_CHECK_INTERVAL = 2  # seconds
+nestjs_process = None
+
+async def wait_for_nestjs(max_attempts: int = 30) -> bool:
+    """Wait for NestJS to be ready with health checks"""
+    logger.info(f"Waiting for NestJS on port {NESTJS_PORT}...")
+    
+    for attempt in range(max_attempts):
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f'http://localhost:{NESTJS_PORT}/api/system/health',
+                    timeout=2
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    if data.get('status') in ['healthy', 'degraded']:
+                        logger.info(f"✓ NestJS ready after {(attempt + 1) * HEALTH_CHECK_INTERVAL}s")
+                        return True
+        except Exception as e:
+            logger.debug(f"Health check attempt {attempt + 1}: {e}")
+        
+        await asyncio.sleep(HEALTH_CHECK_INTERVAL)
+    
+    logger.error(f"NestJS failed to start after {max_attempts * HEALTH_CHECK_INTERVAL}s")
+    return False
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global nestjs_process
+    
+    backend_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # Environment for NestJS
+    env = {
+        **os.environ,
+        'NODE_ENV': 'development',
+        'PORT': str(NESTJS_PORT),
+    }
+    
+    # Path to ts-node
+    ts_node_path = os.path.join(backend_dir, 'node_modules', '.bin', 'ts-node')
+    
+    if not os.path.exists(ts_node_path):
+        logger.error(f"ts-node not found at {ts_node_path}")
+        raise RuntimeError("ts-node not installed")
+    
+    logger.info("Starting NestJS backend...")
+    
+    # Start NestJS process
+    nestjs_process = subprocess.Popen(
+        [ts_node_path, '-r', 'tsconfig-paths/register', 'src/main.ts'],
+        cwd=backend_dir,
+        env=env,
+        stdout=sys.stdout,
+        stderr=sys.stderr
+    )
+    
+    # Wait for NestJS to be ready
+    is_ready = await wait_for_nestjs()
+    
+    if not is_ready:
+        logger.warning("NestJS may not be fully ready, continuing anyway...")
+    
+    yield
+    
+    # Cleanup
+    if nestjs_process:
+        logger.info("Shutting down NestJS...")
+        nestjs_process.terminate()
+        try:
+            nestjs_process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            nestjs_process.kill()
+            nestjs_process.wait()
+
+app = FastAPI(lifespan=lifespan, title="BIBI CRM Proxy")
+
+@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
+async def proxy(request: Request, path: str):
+    url = f"http://localhost:{NESTJS_PORT}/{path}"
+    
+    headers = dict(request.headers)
+    headers.pop("host", None)
+    
+    body = await request.body()
+    
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.request(
+                method=request.method,
+                url=url,
+                headers=headers,
+                content=body,
+                params=dict(request.query_params)
+            )
+            
+            return Response(
+                content=response.content,
+                status_code=response.status_code,
+                headers=dict(response.headers)
+            )
+    except httpx.ConnectError:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "Service starting", "message": "Backend is initializing, please retry"}
+        )
+    except httpx.TimeoutException:
+        return JSONResponse(
+            status_code=504,
+            content={"error": "Timeout", "message": "Backend request timed out"}
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=502,
+            content={"error": str(e), "message": "Backend unavailable"}
+        )
