@@ -80,6 +80,9 @@ import { RiskControlModule } from './modules/risk/risk-control.module';
 import { DocusignModule } from './modules/docusign/docusign.module';
 import { LoginApprovalModule } from './modules/login-approval/login-approval.module';
 import { PaymentFlowModule } from './modules/payment-flow/payment-flow.module';
+import { InvoiceReminderModule } from './modules/invoice-reminders/invoice-reminder.module';
+import { ShipmentAlertsModule } from './modules/shipment-alerts/shipment-alerts.module';
+import { OwnerDashboardModule } from './modules/owner-dashboard/owner-dashboard.module';
 
 @Module({
   imports: [
@@ -174,6 +177,9 @@ import { PaymentFlowModule } from './modules/payment-flow/payment-flow.module';
     DocusignModule,
     LoginApprovalModule,
     PaymentFlowModule,
+    InvoiceReminderModule,
+    ShipmentAlertsModule,
+    OwnerDashboardModule,
   ],
 })
 export class AppModule {}
