@@ -79,6 +79,7 @@ import { AdvancedAnalyticsModule } from './modules/analytics/advanced-analytics.
 import { RiskControlModule } from './modules/risk/risk-control.module';
 import { DocusignModule } from './modules/docusign/docusign.module';
 import { LoginApprovalModule } from './modules/login-approval/login-approval.module';
+import { PaymentFlowModule } from './modules/payment-flow/payment-flow.module';
 
 @Module({
   imports: [
@@ -172,6 +173,7 @@ import { LoginApprovalModule } from './modules/login-approval/login-approval.mod
     RiskControlModule,
     DocusignModule,
     LoginApprovalModule,
+    PaymentFlowModule,
   ],
 })
 export class AppModule {}

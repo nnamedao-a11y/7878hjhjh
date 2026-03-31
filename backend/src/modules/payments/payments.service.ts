@@ -1,44 +1,52 @@
 /**
  * Payments Service
  * 
- * Handles:
- * 1. Invoice creation for each step
- * 2. Stripe checkout session creation
- * 3. Webhook processing
- * 4. Payment status checking
+ * Universal Invoice Engine
  * 
- * SECURITY:
- * - Amount always from backend (FIXED_PACKAGES or deal amount)
- * - URLs built dynamically from frontend origin
+ * Features:
+ * - Invoice creation with step blocking
+ * - Stripe checkout integration
+ * - Webhook processing
+ * - Overdue detection and reminders
+ * - Payment flow integration
  */
 
-import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, ForbiddenException, Inject, forwardRef } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import Stripe from 'stripe';
 import { Invoice, InvoiceStatus, InvoiceType } from './invoice.schema';
+import { PaymentFlowService } from '../payment-flow/payment-flow.service';
 import { generateId, toObjectResponse } from '../../shared/utils';
 
-// Fixed packages (amount in USD)
-const FIXED_PACKAGES = {
-  deposit_500: { amount: 500, description: 'Депозит $500', type: InvoiceType.DEPOSIT },
-  deposit_1000: { amount: 1000, description: 'Депозит $1000', type: InvoiceType.DEPOSIT },
-  deposit_2000: { amount: 2000, description: 'Депозит $2000', type: InvoiceType.DEPOSIT },
-  service_fee: { amount: 350, description: 'Сервісний збір', type: InvoiceType.SERVICE_FEE },
+// Invoice type to step key mapping
+const TYPE_TO_STEP: Record<InvoiceType, string> = {
+  [InvoiceType.DEPOSIT]: 'deposit_paid',
+  [InvoiceType.LOT_PAYMENT]: 'lot_paid',
+  [InvoiceType.AUCTION_FEE]: 'auction_fee_paid',
+  [InvoiceType.LOGISTICS]: 'logistics_paid',
+  [InvoiceType.CUSTOMS]: 'customs_paid',
+  [InvoiceType.DELIVERY]: 'delivery_paid',
+  [InvoiceType.SERVICE_FEE]: 'service_fee_paid',
+  [InvoiceType.OTHER]: 'other',
 };
 
 export interface CreateInvoiceDto {
-  customerId: string;
+  dealId: string;
+  userId: string;
+  managerId: string;
+  shipmentId?: string;
+  type: InvoiceType;
+  title: string;
+  description?: string;
+  amount: number;
+  currency?: string;
+  dueDate?: Date;
+  requiredForNextStep?: boolean;
+  metadata?: Record<string, any>;
   customerName?: string;
   customerEmail?: string;
-  dealId?: string;
-  leadId?: string;
-  type: InvoiceType;
-  amount: number;
-  description?: string;
-  dueDate?: Date;
-  metadata?: Record<string, any>;
 }
 
 export interface CreateCheckoutDto {
@@ -55,6 +63,8 @@ export class PaymentsService {
     private configService: ConfigService,
     @InjectModel(Invoice.name) private invoiceModel: Model<Invoice>,
     @InjectModel('Deal') private dealModel: Model<any>,
+    @Inject(forwardRef(() => PaymentFlowService))
+    private paymentFlowService: PaymentFlowService,
   ) {
     const apiKey = this.configService.get<string>('STRIPE_API_KEY') || 'sk_test_emergent';
     this.stripe = new Stripe(apiKey, { apiVersion: '2025-02-24.acacia' as any });
@@ -62,48 +72,79 @@ export class PaymentsService {
 
   // === CREATE INVOICE ===
   
-  async createInvoice(dto: CreateInvoiceDto): Promise<Invoice> {
-    // Validate amount (must be > 0)
+  async createInvoice(dto: CreateInvoiceDto): Promise<any> {
+    // Validate amount
     if (!dto.amount || dto.amount <= 0) {
       throw new BadRequestException('Amount must be greater than 0');
     }
 
+    // Check if invoice creation is allowed (contract must be signed)
+    await this.paymentFlowService.assertCanCreateInvoice(dto.dealId);
+
+    const stepKey = TYPE_TO_STEP[dto.type] || dto.type;
+
     const invoice = new this.invoiceModel({
       id: generateId(),
       ...dto,
-      currency: 'usd',
-      status: InvoiceStatus.PENDING,
+      currency: dto.currency || 'USD',
+      status: InvoiceStatus.DRAFT,
+      stepKey,
+      requiredForNextStep: dto.requiredForNextStep !== false,
       dueDate: dto.dueDate || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days default
     });
 
     await invoice.save();
-    this.logger.log(`Invoice created: ${invoice.id} for ${dto.amount} USD`);
 
-    return invoice;
+    // Notify payment flow about new invoice
+    await this.paymentFlowService.onInvoiceCreated(dto.dealId, invoice.id, dto.amount);
+
+    this.logger.log(`Invoice created: ${invoice.id} for ${dto.amount} ${invoice.currency}`);
+
+    return toObjectResponse(invoice.toObject());
   }
 
-  // === CREATE INVOICE FROM PACKAGE ===
+  // === SEND INVOICE ===
   
-  async createInvoiceFromPackage(
-    packageId: string,
-    customerId: string,
-    customerEmail?: string,
-    dealId?: string
-  ): Promise<Invoice> {
-    const pkg = FIXED_PACKAGES[packageId];
-    if (!pkg) {
-      throw new BadRequestException(`Invalid package: ${packageId}`);
+  async sendInvoice(invoiceId: string): Promise<any> {
+    const invoice = await this.invoiceModel.findOne({ id: invoiceId });
+    if (!invoice) {
+      throw new NotFoundException('Invoice not found');
     }
 
-    return this.createInvoice({
-      customerId,
-      customerEmail,
-      dealId,
-      type: pkg.type,
-      amount: pkg.amount,
-      description: pkg.description,
-      metadata: { packageId },
-    });
+    if (invoice.status !== InvoiceStatus.DRAFT) {
+      throw new BadRequestException('Only draft invoices can be sent');
+    }
+
+    invoice.status = InvoiceStatus.SENT;
+    invoice.sentAt = new Date();
+    await invoice.save();
+
+    this.logger.log(`Invoice sent: ${invoiceId}`);
+
+    // TODO: Send email notification to customer
+
+    return toObjectResponse(invoice.toObject());
+  }
+
+  // === CANCEL INVOICE ===
+  
+  async cancelInvoice(invoiceId: string): Promise<any> {
+    const invoice = await this.invoiceModel.findOne({ id: invoiceId });
+    if (!invoice) {
+      throw new NotFoundException('Invoice not found');
+    }
+
+    if (invoice.status === InvoiceStatus.PAID) {
+      throw new BadRequestException('Cannot cancel paid invoice');
+    }
+
+    invoice.status = InvoiceStatus.CANCELLED;
+    invoice.cancelledAt = new Date();
+    await invoice.save();
+
+    this.logger.log(`Invoice cancelled: ${invoiceId}`);
+
+    return toObjectResponse(invoice.toObject());
   }
 
   // === CREATE CHECKOUT SESSION ===
@@ -118,7 +159,16 @@ export class PaymentsService {
       throw new BadRequestException('Invoice already paid');
     }
 
-    // Build URLs dynamically (NEVER hardcode)
+    if (invoice.status === InvoiceStatus.CANCELLED) {
+      throw new BadRequestException('Invoice is cancelled');
+    }
+
+    // Update status to pending if draft/sent
+    if (invoice.status === InvoiceStatus.DRAFT || invoice.status === InvoiceStatus.SENT) {
+      invoice.status = InvoiceStatus.PENDING;
+    }
+
+    // Build URLs dynamically
     const successUrl = `${dto.originUrl}/cabinet/payment-success?session_id={CHECKOUT_SESSION_ID}`;
     const cancelUrl = `${dto.originUrl}/cabinet/invoices`;
 
@@ -128,9 +178,10 @@ export class PaymentsService {
         line_items: [
           {
             price_data: {
-              currency: invoice.currency || 'usd',
+              currency: (invoice.currency || 'usd').toLowerCase(),
               product_data: {
-                name: invoice.description || `Invoice #${invoice.id}`,
+                name: invoice.title || `Invoice #${invoice.id}`,
+                description: invoice.description,
               },
               unit_amount: Math.round(invoice.amount * 100), // Stripe uses cents
             },
@@ -142,9 +193,10 @@ export class PaymentsService {
         cancel_url: cancelUrl,
         metadata: {
           invoiceId: invoice.id,
-          customerId: invoice.customerId,
-          dealId: invoice.dealId || '',
+          dealId: invoice.dealId,
+          userId: invoice.userId,
           type: invoice.type,
+          stepKey: invoice.stepKey,
         },
         customer_email: invoice.customerEmail,
       });
@@ -177,7 +229,6 @@ export class PaymentsService {
       if (webhookSecret) {
         event = this.stripe.webhooks.constructEvent(body, signature, webhookSecret);
       } else {
-        // For testing without webhook secret
         event = JSON.parse(body.toString());
       }
     } catch (err) {
@@ -193,9 +244,6 @@ export class PaymentsService {
         break;
       case 'checkout.session.expired':
         await this.handleCheckoutExpired(event.data.object as Stripe.Checkout.Session);
-        break;
-      case 'payment_intent.succeeded':
-        // Handle payment intent if needed
         break;
     }
 
@@ -221,10 +269,19 @@ export class PaymentsService {
       return;
     }
 
+    // Mark as paid
     invoice.status = InvoiceStatus.PAID;
     invoice.paidAt = new Date();
     invoice.stripePaymentIntentId = session.payment_intent as string;
     await invoice.save();
+
+    // Update payment flow
+    await this.paymentFlowService.onInvoicePaid(
+      invoice.dealId,
+      invoice.type,
+      invoice.id,
+      invoice.amount
+    );
 
     // Update deal if connected
     if (invoice.dealId) {
@@ -245,11 +302,45 @@ export class PaymentsService {
     if (!invoiceId) return;
 
     await this.invoiceModel.updateOne(
-      { id: invoiceId, status: InvoiceStatus.PENDING },
+      { id: invoiceId, status: { $ne: InvoiceStatus.PAID } },
       { $set: { status: InvoiceStatus.EXPIRED } }
     );
 
     this.logger.log(`Invoice ${invoiceId} marked as EXPIRED`);
+  }
+
+  // === MARK AS PAID (MANUAL) ===
+  
+  async markAsPaid(invoiceId: string, managerId: string): Promise<any> {
+    const invoice = await this.invoiceModel.findOne({ id: invoiceId });
+    if (!invoice) {
+      throw new NotFoundException('Invoice not found');
+    }
+
+    if (invoice.status === InvoiceStatus.PAID) {
+      throw new BadRequestException('Invoice already paid');
+    }
+
+    invoice.status = InvoiceStatus.PAID;
+    invoice.paidAt = new Date();
+    invoice.metadata = {
+      ...invoice.metadata,
+      manuallyMarkedPaid: true,
+      markedPaidBy: managerId,
+    };
+    await invoice.save();
+
+    // Update payment flow
+    await this.paymentFlowService.onInvoicePaid(
+      invoice.dealId,
+      invoice.type,
+      invoice.id,
+      invoice.amount
+    );
+
+    this.logger.log(`Invoice ${invoiceId} manually marked as PAID by ${managerId}`);
+
+    return toObjectResponse(invoice.toObject());
   }
 
   // === GET CHECKOUT STATUS ===
@@ -266,6 +357,14 @@ export class PaymentsService {
           invoice.paidAt = new Date();
           invoice.stripePaymentIntentId = session.payment_intent as string;
           await invoice.save();
+
+          // Update payment flow
+          await this.paymentFlowService.onInvoicePaid(
+            invoice.dealId,
+            invoice.type,
+            invoice.id,
+            invoice.amount
+          );
         }
       }
 
@@ -282,16 +381,6 @@ export class PaymentsService {
     }
   }
 
-  // === GET USER INVOICES ===
-  
-  async getUserInvoices(customerId: string): Promise<any[]> {
-    const invoices = await this.invoiceModel.find({ customerId })
-      .sort({ createdAt: -1 })
-      .lean();
-    
-    return invoices.map(i => toObjectResponse(i));
-  }
-
   // === GET INVOICE ===
   
   async getInvoice(invoiceId: string): Promise<any> {
@@ -300,6 +389,138 @@ export class PaymentsService {
       throw new NotFoundException('Invoice not found');
     }
     return toObjectResponse(invoice);
+  }
+
+  // === GET USER INVOICES ===
+  
+  async getUserInvoices(userId: string): Promise<any[]> {
+    const invoices = await this.invoiceModel.find({ userId })
+      .sort({ createdAt: -1 })
+      .lean();
+    
+    return invoices.map(i => toObjectResponse(i));
+  }
+
+  // === GET DEAL INVOICES ===
+  
+  async getDealInvoices(dealId: string): Promise<any[]> {
+    const invoices = await this.invoiceModel.find({ dealId })
+      .sort({ createdAt: -1 })
+      .lean();
+    
+    return invoices.map(i => toObjectResponse(i));
+  }
+
+  // === GET MANAGER INVOICES ===
+  
+  async getManagerInvoices(managerId: string): Promise<any[]> {
+    const invoices = await this.invoiceModel.find({ managerId })
+      .sort({ createdAt: -1 })
+      .lean();
+    
+    return invoices.map(i => toObjectResponse(i));
+  }
+
+  // === GET ALL INVOICES (ADMIN) ===
+  
+  async getAdminInvoices(filters?: {
+    status?: InvoiceStatus;
+    type?: InvoiceType;
+    startDate?: Date;
+    endDate?: Date;
+  }): Promise<any[]> {
+    const query: any = {};
+    
+    if (filters?.status) query.status = filters.status;
+    if (filters?.type) query.type = filters.type;
+    if (filters?.startDate || filters?.endDate) {
+      query.createdAt = {};
+      if (filters.startDate) query.createdAt.$gte = filters.startDate;
+      if (filters.endDate) query.createdAt.$lte = filters.endDate;
+    }
+
+    const invoices = await this.invoiceModel.find(query)
+      .sort({ createdAt: -1 })
+      .lean();
+    
+    return invoices.map(i => toObjectResponse(i));
+  }
+
+  // === GET OVERDUE INVOICES ===
+  
+  async getOverdueInvoices(): Promise<any[]> {
+    const now = new Date();
+    const invoices = await this.invoiceModel.find({
+      status: { $in: [InvoiceStatus.SENT, InvoiceStatus.PENDING] },
+      dueDate: { $lt: now },
+    })
+      .sort({ dueDate: 1 })
+      .lean();
+    
+    return invoices.map(i => toObjectResponse(i));
+  }
+
+  // === CHECK AND MARK OVERDUE ===
+  
+  async checkAndMarkOverdue(): Promise<number> {
+    const now = new Date();
+    const result = await this.invoiceModel.updateMany(
+      {
+        status: { $in: [InvoiceStatus.SENT, InvoiceStatus.PENDING] },
+        dueDate: { $lt: now },
+      },
+      { $set: { status: InvoiceStatus.OVERDUE } }
+    );
+
+    // Notify payment flow for each overdue invoice
+    const overdueInvoices = await this.invoiceModel.find({ status: InvoiceStatus.OVERDUE });
+    for (const invoice of overdueInvoices) {
+      await this.paymentFlowService.onInvoiceOverdue(invoice.dealId, invoice.id, invoice.amount);
+    }
+
+    this.logger.log(`Marked ${result.modifiedCount} invoices as overdue`);
+    return result.modifiedCount;
+  }
+
+  // === GET ANALYTICS ===
+  
+  async getAnalytics(periodDays: number = 30): Promise<any> {
+    const startDate = new Date(Date.now() - periodDays * 24 * 60 * 60 * 1000);
+
+    const [total, byStatus, byType, totalPaid, totalOverdue] = await Promise.all([
+      this.invoiceModel.countDocuments({ createdAt: { $gte: startDate } }),
+      this.invoiceModel.aggregate([
+        { $match: { createdAt: { $gte: startDate } } },
+        { $group: { _id: '$status', count: { $sum: 1 }, amount: { $sum: '$amount' } } },
+      ]),
+      this.invoiceModel.aggregate([
+        { $match: { createdAt: { $gte: startDate } } },
+        { $group: { _id: '$type', count: { $sum: 1 }, amount: { $sum: '$amount' } } },
+      ]),
+      this.invoiceModel.aggregate([
+        { $match: { status: InvoiceStatus.PAID, paidAt: { $gte: startDate } } },
+        { $group: { _id: null, total: { $sum: '$amount' } } },
+      ]),
+      this.invoiceModel.aggregate([
+        { $match: { status: InvoiceStatus.OVERDUE } },
+        { $group: { _id: null, total: { $sum: '$amount' } } },
+      ]),
+    ]);
+
+    return {
+      total,
+      byStatus: byStatus.reduce((acc, s) => ({ 
+        ...acc, 
+        [s._id]: { count: s.count, amount: s.amount } 
+      }), {}),
+      byType: byType.reduce((acc, t) => ({ 
+        ...acc, 
+        [t._id]: { count: t.count, amount: t.amount } 
+      }), {}),
+      totalPaid: totalPaid[0]?.total || 0,
+      totalOverdue: totalOverdue[0]?.total || 0,
+      periodDays,
+    };
   }
 
   // === CHECK IF STEP IS BLOCKED ===
@@ -312,14 +533,5 @@ export class PaymentsService {
     });
 
     return !paidInvoice;
-  }
-
-  // === GET AVAILABLE PACKAGES ===
-  
-  getAvailablePackages(): any {
-    return Object.entries(FIXED_PACKAGES).map(([id, pkg]) => ({
-      id,
-      ...pkg,
-    }));
   }
 }

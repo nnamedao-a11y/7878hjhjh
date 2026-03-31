@@ -1,22 +1,26 @@
 /**
  * Payments Module
- * 
- * Stripe integration for invoice payments
  */
 
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
+import { ConfigModule } from '@nestjs/config';
 import { PaymentsController } from './payments.controller';
 import { PaymentsService } from './payments.service';
 import { Invoice, InvoiceSchema } from './invoice.schema';
+import { PaymentFlowModule } from '../payment-flow/payment-flow.module';
+import { AuthModule } from '../auth/auth.module';
 import { Deal, DealSchema } from '../deals/deal.schema';
 
 @Module({
   imports: [
+    ConfigModule,
     MongooseModule.forFeature([
       { name: Invoice.name, schema: InvoiceSchema },
-      { name: 'Deal', schema: DealSchema },
+      { name: Deal.name, schema: DealSchema },
     ]),
+    forwardRef(() => PaymentFlowModule),
+    forwardRef(() => AuthModule),
   ],
   controllers: [PaymentsController],
   providers: [PaymentsService],

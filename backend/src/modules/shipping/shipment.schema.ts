@@ -1,20 +1,35 @@
 /**
  * Shipment Schema
  * 
- * Tracks vehicle shipping status
+ * Tracks vehicle shipping status with proper lifecycle stages
+ * Integrated with PaymentFlowState for blocking logic
  */
 
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document } from 'mongoose';
 
+// Full shipment status lifecycle (matches PRD)
 export enum ShipmentStatus {
-  PENDING = 'pending',
-  PICKED_UP = 'picked_up',
+  DEAL_CREATED = 'deal_created',
+  CONTRACT_SIGNED = 'contract_signed',
+  DEPOSIT_PAID = 'deposit_paid',
+  LOT_PAID = 'lot_paid',
+  TRANSPORT_TO_PORT = 'transport_to_port',
+  AT_ORIGIN_PORT = 'at_origin_port',
+  LOADED_ON_VESSEL = 'loaded_on_vessel',
   IN_TRANSIT = 'in_transit',
-  AT_PORT = 'at_port',
-  CUSTOMS_CLEARANCE = 'customs_clearance',
+  AT_DESTINATION_PORT = 'at_destination_port',
+  CUSTOMS = 'customs',
+  READY_FOR_PICKUP = 'ready_for_pickup',
   DELIVERED = 'delivered',
   CANCELLED = 'cancelled',
+}
+
+// Tracking mode
+export enum TrackingMode {
+  MANUAL = 'manual',
+  API = 'api',
+  HYBRID = 'hybrid',
 }
 
 @Schema({ timestamps: true })
@@ -22,7 +37,16 @@ export class Shipment extends Document {
   @Prop({ required: true, unique: true })
   id: string;
 
-  @Prop({ required: true })
+  @Prop({ required: true, index: true })
+  dealId: string;
+
+  @Prop({ required: true, index: true })
+  userId: string;
+
+  @Prop({ required: true, index: true })
+  managerId: string;
+
+  @Prop()
   customerId: string;
 
   @Prop()
@@ -31,10 +55,7 @@ export class Shipment extends Document {
   @Prop()
   customerEmail: string;
 
-  @Prop()
-  dealId: string;
-
-  @Prop({ required: true })
+  @Prop({ required: true, index: true })
   vin: string;
 
   @Prop()
@@ -48,10 +69,16 @@ export class Shipment extends Document {
   bookingNumber: string;
 
   @Prop()
+  carrier: string;
+
+  @Prop()
   shippingLine: string;
 
   @Prop()
   vesselName: string;
+
+  @Prop()
+  vesselImo: string;
 
   // Ports
   @Prop()
@@ -61,11 +88,25 @@ export class Shipment extends Document {
   destinationPort: string;
 
   @Prop()
+  currentPort: string;
+
+  @Prop()
   currentLocation: string;
 
-  // Status
-  @Prop({ type: String, enum: ShipmentStatus, default: ShipmentStatus.PENDING })
-  status: ShipmentStatus;
+  // Status - using new enum
+  @Prop({ type: String, enum: ShipmentStatus, default: ShipmentStatus.DEAL_CREATED, index: true })
+  currentStatus: ShipmentStatus;
+
+  // Tracking
+  @Prop({ type: String, enum: TrackingMode, default: TrackingMode.MANUAL })
+  trackingMode: TrackingMode;
+
+  @Prop({ default: false })
+  trackingActive: boolean;
+
+  // ETA
+  @Prop()
+  eta: Date;
 
   // Dates
   @Prop()
@@ -128,9 +169,12 @@ export const ShipmentSchema = SchemaFactory.createForClass(Shipment);
 
 // Indexes
 ShipmentSchema.index({ id: 1 }, { unique: true });
-ShipmentSchema.index({ customerId: 1 });
+ShipmentSchema.index({ userId: 1 });
+ShipmentSchema.index({ managerId: 1 });
 ShipmentSchema.index({ dealId: 1 });
 ShipmentSchema.index({ vin: 1 });
 ShipmentSchema.index({ containerNumber: 1 });
-ShipmentSchema.index({ status: 1 });
+ShipmentSchema.index({ currentStatus: 1 });
+ShipmentSchema.index({ trackingActive: 1 });
 ShipmentSchema.index({ createdAt: -1 });
+

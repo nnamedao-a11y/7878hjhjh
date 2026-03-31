@@ -14,7 +14,7 @@ CRM система для автосалону BIBI Cars з 4 кабінетам
 ### Backend (/app/backend)
 - NestJS з ~80 модулями
 - server.py - FastAPI proxy для запуску NestJS
-- Модулі: auth, customers, leads, deals, deposits, staff, notifications, kpi, та інші
+- Модулі: auth, customers, leads, deals, deposits, staff, notifications, kpi, payments, shipping, payment-flow, contracts та інші
 
 ### Frontend (/app/frontend)
 - React 19 + TypeScript/JSX
@@ -22,9 +22,9 @@ CRM система для автосалону BIBI Cars з 4 кабінетам
 - Framer Motion анімації
 - i18n підтримка (UA, EN, BG)
 
-## Що реалізовано (31.03.2026)
+## Що реалізовано
 
-### ✅ Завершені функції
+### ✅ Завершені функції (31.03.2026)
 
 1. **Dashboard (Панель контролю)**
    - KPI метрики: ліди, депозити, верифікація
@@ -32,10 +32,9 @@ CRM система для автосалону BIBI Cars з 4 кабінетам
    - Контроль зворотних дзвінків
 
 2. **Team Lead Panel** `/admin/team-lead`
-   - KPI dashboard з 4 метриками (менеджери, ліди, угоди, дзвінки)
+   - KPI dashboard з 4 метриками
    - Таблиця активності команди
    - Запити на вхід (approval/reject)
-   - Доступ: owner, team_lead
 
 3. **CRM модулі**
    - Ліди (leads management)
@@ -44,30 +43,90 @@ CRM система для автосалону BIBI Cars з 4 кабінетам
    - Депозити (deposits)
 
 4. **Settings > Інтеграції**
-   - Stripe (Secret Key, Publishable Key, Webhook Secret)
-   - DocuSign (Integration Key, Account ID, User ID)
-   - Ringostat (API Key, Account ID)
-   - OpenAI (API Key)
-   - Telegram Bot (Bot Token)
+   - Stripe, DocuSign, Ringostat, OpenAI, Telegram Bot
    - Meta Ads API, Facebook Conversion API
 
 5. **Тестові клієнти** (5 шт.)
-   - Олександр Петренко (o.petrenko@gmail.com)
-   - Марія Коваленко (m.kovalenko@ukr.net) - VIP
-   - Іван Сидоренко (ivan.sydorenko@company.ua) - Компанія
-   - Наталія Бондаренко (natalia.b@outlook.com)
-   - Дмитро Шевченко (d.shevchenko@gmail.com)
 
-6. **Публічна частина**
-   - Landing page з VIN пошуком
-   - Автомобілі, колекції
-   - Калькулятор вартості
+### ✅ Payment Flow Engine (NEW - 31.03.2026)
+
+**Модуль: /modules/payment-flow**
+
+PaymentFlowState Entity:
+- dealId, userId, managerId
+- currentStep: deal_created -> contract_signed -> deposit_paid -> lot_paid -> ...
+- Payment gates: contractSigned, depositPaid, lotPaid, customsPaid, etc.
+- Blocking logic: nextAllowedStep, blockedReason
+- Invoice tracking: paidInvoiceIds, pendingInvoiceIds, overdueInvoiceIds
+
+Business Rules:
+- Contract MUST be signed before creating invoices
+- Deposit invoice MUST be paid before shipment starts
+- Lot payment MUST be paid before loading on vessel
+- Customs invoice MUST be paid before ready for pickup
+
+### ✅ Universal Invoice Engine (NEW - 31.03.2026)
+
+**Updated Module: /modules/payments**
+
+Invoice Entity (Extended):
+- dealId, userId, managerId, shipmentId
+- type: deposit | lot_payment | auction_fee | logistics | customs | delivery | service_fee | other
+- status: draft | sent | pending | paid | overdue | cancelled | expired
+- requiredForNextStep: boolean
+- stepKey: links invoice to payment flow step
+- Stripe integration: sessionId, paymentIntentId, checkoutUrl
+- Reminder tracking: remindersSent, lastReminderAt
+
+API Endpoints:
+- POST /api/invoices/create - create with step blocking check
+- PATCH /api/invoices/:id/send - change status to sent
+- PATCH /api/invoices/:id/cancel - cancel invoice
+- PATCH /api/invoices/:id/mark-paid - manual mark as paid
+- POST /api/invoices/checkout - create Stripe session
+- GET /api/invoices/admin/overdue - get overdue invoices
+- GET /api/invoices/admin/analytics - payment analytics
+
+### ✅ Enhanced Shipping Module (NEW - 31.03.2026)
+
+**Updated Module: /modules/shipping**
+
+Shipment Entity (Extended):
+- Full lifecycle: deal_created -> contract_signed -> deposit_paid -> lot_paid -> transport_to_port -> at_origin_port -> loaded_on_vessel -> in_transit -> at_destination_port -> customs -> ready_for_pickup -> delivered
+- trackingMode: manual | api | hybrid
+- trackingActive: boolean (auto-set based on status)
+- eta, currentPort, vesselName, vesselImo, containerNumber
+
+ShipmentEvent Entity (NEW):
+- shipmentId, eventType, title, description
+- location, eventDate, source (manager | system | provider)
+
+Integration with PaymentFlow:
+- Status changes validated against payment gates
+- Tracking becomes active only after lot_paid
+- Status blocked if required invoice not paid
+
+API Endpoints:
+- GET /api/shipping/me - user's shipments
+- GET /api/shipping/deal/:dealId - shipment by deal
+- PATCH /api/shipping/:id/status - update with payment check
+- PATCH /api/shipping/:id/eta - update ETA
+- PATCH /api/shipping/:id/container - update container info
+- GET/POST /api/shipping/:id/events - event timeline
+- GET /api/shipping/admin/delayed - delayed shipments
+- GET /api/shipping/admin/analytics - shipping analytics
+
+### Customer Cabinet Pages
+
+- /cabinet/shipping - Shipment tracking with timeline
+- /cabinet/invoices - Invoice list with Stripe payment
+- /cabinet/contracts - Contract signing (DocuSign)
 
 ### User Personas
 - **Owner**: Повний доступ до всіх функцій
 - **Team Lead**: Управління командою, схвалення входів
-- **Manager**: Робота з лідами, клієнтами
-- **Customer**: Особистий кабінет клієнта
+- **Manager**: Робота з лідами, клієнтами, shipment updates
+- **Customer**: Особистий кабінет, оплата, трекінг
 
 ## Технічні деталі
 
@@ -84,15 +143,17 @@ CRM система для автосалону BIBI Cars з 4 кабінетам
 ## Пріоритезований Backlog
 
 ### P0 (Done)
-- ✅ Team Lead Panel
-- ✅ Test customers seeded
-- ✅ Settings > Integrations UI
-- ✅ Dashboard working
-- ✅ Customers, Leads, Deals modules
+- ✅ Payment Flow Engine
+- ✅ Universal Invoice Engine
+- ✅ Enhanced Shipping with events
+- ✅ Step blocking logic
+- ✅ Customer cabinet shipping/invoices
 
-### P1 (In Progress)
-- Team Lead Panel link in sidebar (need to verify visibility)
-- Real-time KPI calculations
+### P1 (To Do)
+- Invoice reminders (24h, due date, overdue)
+- Notification integration for payment events
+- Manager invoice control board
+- Owner payment analytics dashboard
 
 ### P2 (Production Keys Required)
 - DocuSign production integration
@@ -100,16 +161,32 @@ CRM система для автосалону BIBI Cars з 4 кабінетам
 - Ringostat call tracking
 
 ### P3 (Future)
-- Mobile App
-- Advanced analytics
+- Provider API integration (MarineTraffic, ShipsGo)
+- Live vessel tracking map
 - WhatsApp Business integration
-- Multi-language support (partial)
+- Mobile App
 
-## Next Tasks
-1. Verify Team Lead Panel link in sidebar menu
-2. Test Stripe payments with test keys
-3. Add real leads/deals data to KPI calculations
-4. Implement WhatsApp Business integration
+## Definition of Done
+
+Блок вважається закритим, якщо:
+
+**Shipping:**
+- ✅ manager can create/update shipment
+- ✅ customer sees shipment timeline
+- ✅ ETA and ports visible
+- ✅ shipment events stored and shown
+
+**Invoices:**
+- ✅ manager can create invoice
+- ✅ user can pay via Stripe
+- ✅ unpaid required invoice blocks next step
+- ⬜ overdue reminders work
+
+**Flow:**
+- ✅ contract signed gates payment
+- ✅ payment gates shipment progress
+- ✅ shipment status updates visible in cabinet
+- ⬜ owner/team lead dashboards show delays/unpaid
 
 ---
-_Last updated: 31.03.2026 21:15 UTC_
+_Last updated: 31.03.2026 21:55 UTC_

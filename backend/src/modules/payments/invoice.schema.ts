@@ -1,15 +1,19 @@
 /**
  * Invoice Schema
  * 
- * Stores invoices for each step in the deal flow
+ * Universal invoice engine supporting all payment types
+ * Integrated with PaymentFlowState for step blocking
  */
 
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document } from 'mongoose';
 
 export enum InvoiceStatus {
+  DRAFT = 'draft',
+  SENT = 'sent',
   PENDING = 'pending',
   PAID = 'paid',
+  OVERDUE = 'overdue',
   CANCELLED = 'cancelled',
   EXPIRED = 'expired',
   REFUNDED = 'refunded',
@@ -17,9 +21,11 @@ export enum InvoiceStatus {
 
 export enum InvoiceType {
   DEPOSIT = 'deposit',
-  CAR_PAYMENT = 'car_payment',
-  SHIPPING = 'shipping',
+  LOT_PAYMENT = 'lot_payment',
+  AUCTION_FEE = 'auction_fee',
+  LOGISTICS = 'logistics',
   CUSTOMS = 'customs',
+  DELIVERY = 'delivery',
   SERVICE_FEE = 'service_fee',
   OTHER = 'other',
 }
@@ -29,7 +35,21 @@ export class Invoice extends Document {
   @Prop({ required: true, unique: true })
   id: string;
 
-  @Prop({ required: true })
+  // Relations
+  @Prop({ required: true, index: true })
+  dealId: string;
+
+  @Prop({ required: true, index: true })
+  userId: string;
+
+  @Prop({ required: true, index: true })
+  managerId: string;
+
+  @Prop({ index: true })
+  shipmentId?: string;
+
+  // Customer info (cached)
+  @Prop()
   customerId: string;
 
   @Prop()
@@ -38,50 +58,71 @@ export class Invoice extends Document {
   @Prop()
   customerEmail: string;
 
-  @Prop()
-  dealId: string;
-
-  @Prop()
-  leadId: string;
-
-  @Prop({ type: String, enum: InvoiceType })
+  // Invoice details
+  @Prop({ type: String, enum: InvoiceType, required: true, index: true })
   type: InvoiceType;
 
   @Prop({ required: true })
-  amount: number;
-
-  @Prop({ default: 'usd' })
-  currency: string;
+  title: string;
 
   @Prop()
-  description: string;
+  description?: string;
 
-  @Prop({ type: String, enum: InvoiceStatus, default: InvoiceStatus.PENDING })
+  // Amount
+  @Prop({ required: true })
+  amount: number;
+
+  @Prop({ default: 'USD' })
+  currency: string;
+
+  // Status
+  @Prop({ type: String, enum: InvoiceStatus, default: InvoiceStatus.DRAFT, index: true })
   status: InvoiceStatus;
+
+  // Step blocking
+  @Prop({ default: true })
+  requiredForNextStep: boolean;
+
+  @Prop({ required: true, index: true })
+  stepKey: string;
+
+  // Due date
+  @Prop()
+  dueDate?: Date;
 
   // Stripe data
   @Prop()
-  stripeSessionId: string;
+  stripeSessionId?: string;
 
   @Prop()
-  stripePaymentIntentId: string;
+  stripePaymentIntentId?: string;
 
   @Prop()
-  stripeCheckoutUrl: string;
+  stripeCheckoutUrl?: string;
 
   // Metadata
   @Prop({ type: Object })
-  metadata: Record<string, any>;
+  metadata?: Record<string, any>;
+
+  // Reminder tracking
+  @Prop({ default: 0 })
+  remindersSent: number;
+
+  @Prop()
+  lastReminderAt?: Date;
 
   // Dates
   @Prop()
-  paidAt: Date;
+  sentAt?: Date;
 
   @Prop()
-  dueDate: Date;
+  paidAt?: Date;
 
   @Prop()
-  expiresAt: Date;
+  cancelledAt?: Date;
+
+  @Prop()
+  expiresAt?: Date;
 
   @Prop()
   createdAt: Date;
@@ -94,8 +135,13 @@ export const InvoiceSchema = SchemaFactory.createForClass(Invoice);
 
 // Indexes
 InvoiceSchema.index({ id: 1 }, { unique: true });
-InvoiceSchema.index({ customerId: 1 });
 InvoiceSchema.index({ dealId: 1 });
-InvoiceSchema.index({ stripeSessionId: 1 });
+InvoiceSchema.index({ userId: 1 });
+InvoiceSchema.index({ managerId: 1 });
+InvoiceSchema.index({ shipmentId: 1 });
+InvoiceSchema.index({ type: 1 });
 InvoiceSchema.index({ status: 1 });
+InvoiceSchema.index({ stepKey: 1 });
+InvoiceSchema.index({ dueDate: 1 });
 InvoiceSchema.index({ createdAt: -1 });
+InvoiceSchema.index({ stripeSessionId: 1 });

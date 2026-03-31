@@ -1,99 +1,206 @@
 /**
  * Shipping Controller
  * 
- * Routes:
- * POST /api/shipping/create            - Create shipment
- * PATCH /api/shipping/:id              - Update shipment
- * POST /api/shipping/:id/event         - Add tracking event
- * POST /api/shipping/:id/document      - Add document
- * GET  /api/shipping/me                - User's shipments
- * GET  /api/shipping/:id               - Get shipment
- * GET  /api/shipping/vin/:vin          - Get by VIN
- * GET  /api/shipping/deal/:dealId      - Get deal shipment
- * GET  /api/admin/shipping/active      - Active shipments (admin)
- * GET  /api/admin/shipping/analytics   - Analytics (admin)
+ * API endpoints for shipment management
  */
 
-import { Controller, Get, Post, Patch, Body, Param, Query, Req } from '@nestjs/common';
-import { ShippingService, CreateShipmentDto, UpdateShipmentDto, AddEventDto } from './shipping.service';
+import { Controller, Get, Post, Patch, Delete, Param, Body, Req, UseGuards, Query } from '@nestjs/common';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { ShippingService, CreateShipmentDto, UpdateShipmentDto, UpdateShipmentStatusDto, AddEventDto } from './shipping.service';
 
-@Controller()
+@Controller('shipping')
 export class ShippingController {
   constructor(private readonly shippingService: ShippingService) {}
 
-  // === CREATE SHIPMENT ===
-  
-  @Post('shipping/create')
-  async createShipment(@Body() body: CreateShipmentDto) {
-    return this.shippingService.createShipment(body);
+  // === USER ENDPOINTS ===
+
+  /**
+   * Get current user's shipments
+   */
+  @Get('me')
+  @UseGuards(JwtAuthGuard)
+  async getMyShipments(@Req() req: any) {
+    return this.shippingService.getUserShipments(req.user.id);
   }
 
-  // === UPDATE SHIPMENT ===
-  
-  @Patch('shipping/:id')
-  async updateShipment(@Param('id') id: string, @Body() body: UpdateShipmentDto) {
-    return this.shippingService.updateShipment(id, body);
+  /**
+   * Get shipment by ID
+   */
+  @Get(':shipmentId')
+  @UseGuards(JwtAuthGuard)
+  async getShipment(@Param('shipmentId') shipmentId: string) {
+    return this.shippingService.getShipment(shipmentId);
   }
 
-  // === ADD EVENT ===
-  
-  @Post('shipping/:id/event')
-  async addEvent(@Param('id') id: string, @Body() body: AddEventDto) {
-    return this.shippingService.addEvent(id, body);
+  /**
+   * Get shipment by deal ID
+   */
+  @Get('deal/:dealId')
+  @UseGuards(JwtAuthGuard)
+  async getByDealId(@Param('dealId') dealId: string) {
+    return this.shippingService.getByDealId(dealId);
   }
 
-  // === ADD DOCUMENT ===
-  
-  @Post('shipping/:id/document')
-  async addDocument(
-    @Param('id') id: string,
-    @Body() body: { type: string; name: string; url: string }
-  ) {
-    return this.shippingService.addDocument(id, body);
-  }
-
-  // === GET MY SHIPMENTS ===
-  
-  @Get('shipping/me')
-  async getMyShipments(@Req() req: any, @Query('customerId') customerId?: string) {
-    const userId = customerId || req.user?.id;
-    if (!userId) return [];
-    return this.shippingService.getUserShipments(userId);
-  }
-
-  // === GET SHIPMENT ===
-  
-  @Get('shipping/:id')
-  async getShipment(@Param('id') id: string) {
-    return this.shippingService.getShipment(id);
-  }
-
-  // === GET BY VIN ===
-  
-  @Get('shipping/vin/:vin')
+  /**
+   * Get shipment by VIN
+   */
+  @Get('vin/:vin')
+  @UseGuards(JwtAuthGuard)
   async getByVin(@Param('vin') vin: string) {
     return this.shippingService.getByVin(vin);
   }
 
-  // === GET DEAL SHIPMENT ===
-  
-  @Get('shipping/deal/:dealId')
-  async getDealShipment(@Param('dealId') dealId: string) {
-    return this.shippingService.getDealShipment(dealId);
-  }
+  // === ADMIN/MANAGER ENDPOINTS ===
 
-  // === ADMIN: ACTIVE SHIPMENTS ===
-  
-  @Get('admin/shipping/active')
+  /**
+   * Get all active shipments (admin)
+   */
+  @Get('admin/active')
+  @UseGuards(JwtAuthGuard)
   async getActiveShipments() {
     return this.shippingService.getActiveShipments();
   }
 
-  // === ADMIN: ANALYTICS ===
-  
-  @Get('admin/shipping/analytics')
-  async getAnalytics(@Query('period') period?: string) {
-    const periodDays = parseInt(period || '30', 10);
-    return this.shippingService.getAnalytics(periodDays);
+  /**
+   * Get delayed shipments (admin)
+   */
+  @Get('admin/delayed')
+  @UseGuards(JwtAuthGuard)
+  async getDelayedShipments() {
+    return this.shippingService.getDelayedShipments();
+  }
+
+  /**
+   * Get manager's shipments
+   */
+  @Get('manager/my')
+  @UseGuards(JwtAuthGuard)
+  async getManagerShipments(@Req() req: any) {
+    return this.shippingService.getManagerShipments(req.user.id);
+  }
+
+  /**
+   * Get analytics
+   */
+  @Get('admin/analytics')
+  @UseGuards(JwtAuthGuard)
+  async getAnalytics(@Query('days') days?: number) {
+    return this.shippingService.getAnalytics(days || 30);
+  }
+
+  // === CREATE/UPDATE ENDPOINTS ===
+
+  /**
+   * Create a new shipment
+   */
+  @Post()
+  @UseGuards(JwtAuthGuard)
+  async createShipment(@Body() dto: CreateShipmentDto, @Req() req: any) {
+    // Set manager ID from token if not provided
+    if (!dto.managerId) {
+      dto.managerId = req.user.id;
+    }
+    return this.shippingService.createShipment(dto);
+  }
+
+  /**
+   * Update shipment details
+   */
+  @Patch(':shipmentId')
+  @UseGuards(JwtAuthGuard)
+  async updateShipment(
+    @Param('shipmentId') shipmentId: string,
+    @Body() dto: UpdateShipmentDto,
+  ) {
+    return this.shippingService.updateShipment(shipmentId, dto);
+  }
+
+  /**
+   * Update shipment status
+   */
+  @Patch(':shipmentId/status')
+  @UseGuards(JwtAuthGuard)
+  async updateShipmentStatus(
+    @Param('shipmentId') shipmentId: string,
+    @Body() dto: UpdateShipmentStatusDto,
+    @Req() req: any,
+  ) {
+    return this.shippingService.updateShipmentStatus(shipmentId, dto, req.user.id);
+  }
+
+  /**
+   * Update ETA
+   */
+  @Patch(':shipmentId/eta')
+  @UseGuards(JwtAuthGuard)
+  async updateEta(
+    @Param('shipmentId') shipmentId: string,
+    @Body() body: { eta: string },
+    @Req() req: any,
+  ) {
+    return this.shippingService.updateEta(shipmentId, new Date(body.eta), req.user.id);
+  }
+
+  /**
+   * Update container info
+   */
+  @Patch(':shipmentId/container')
+  @UseGuards(JwtAuthGuard)
+  async updateContainer(
+    @Param('shipmentId') shipmentId: string,
+    @Body() body: { containerNumber: string; vesselName?: string },
+    @Req() req: any,
+  ) {
+    return this.shippingService.updateContainer(
+      shipmentId, 
+      body.containerNumber, 
+      body.vesselName, 
+      req.user.id
+    );
+  }
+
+  // === EVENT ENDPOINTS ===
+
+  /**
+   * Get shipment events
+   */
+  @Get(':shipmentId/events')
+  @UseGuards(JwtAuthGuard)
+  async getEvents(@Param('shipmentId') shipmentId: string) {
+    return this.shippingService.getEvents(shipmentId);
+  }
+
+  /**
+   * Add shipment event
+   */
+  @Post(':shipmentId/events')
+  @UseGuards(JwtAuthGuard)
+  async addEvent(
+    @Param('shipmentId') shipmentId: string,
+    @Body() dto: AddEventDto,
+    @Req() req: any,
+  ) {
+    return this.shippingService.addEvent(shipmentId, dto, req.user.id);
+  }
+
+  /**
+   * Update event
+   */
+  @Patch('events/:eventId')
+  @UseGuards(JwtAuthGuard)
+  async updateEvent(
+    @Param('eventId') eventId: string,
+    @Body() dto: Partial<AddEventDto>,
+  ) {
+    return this.shippingService.updateEvent(eventId, dto);
+  }
+
+  /**
+   * Delete event
+   */
+  @Delete('events/:eventId')
+  @UseGuards(JwtAuthGuard)
+  async deleteEvent(@Param('eventId') eventId: string) {
+    return this.shippingService.deleteEvent(eventId);
   }
 }
