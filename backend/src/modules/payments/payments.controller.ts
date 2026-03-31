@@ -14,7 +14,7 @@ import { Request } from 'express';
 export class PaymentsController {
   constructor(private readonly paymentsService: PaymentsService) {}
 
-  // === USER ENDPOINTS ===
+  // === STATIC ROUTES FIRST (before parameterized) ===
 
   /**
    * Get current user's invoices
@@ -24,26 +24,6 @@ export class PaymentsController {
   async getMyInvoices(@Req() req: any) {
     return this.paymentsService.getUserInvoices(req.user.id);
   }
-
-  /**
-   * Get invoice by ID
-   */
-  @Get(':invoiceId')
-  @UseGuards(JwtAuthGuard)
-  async getInvoice(@Param('invoiceId') invoiceId: string) {
-    return this.paymentsService.getInvoice(invoiceId);
-  }
-
-  /**
-   * Get invoices for a deal
-   */
-  @Get('deal/:dealId')
-  @UseGuards(JwtAuthGuard)
-  async getDealInvoices(@Param('dealId') dealId: string) {
-    return this.paymentsService.getDealInvoices(dealId);
-  }
-
-  // === ADMIN/MANAGER ENDPOINTS ===
 
   /**
    * Get all invoices (admin)
@@ -67,6 +47,24 @@ export class PaymentsController {
   }
 
   /**
+   * Get analytics (admin)
+   */
+  @Get('admin/analytics')
+  @UseGuards(JwtAuthGuard)
+  async getAnalytics(@Query('days') days?: number) {
+    return this.paymentsService.getAnalytics(days || 30);
+  }
+
+  /**
+   * Get analytics (alias without admin prefix)
+   */
+  @Get('analytics')
+  @UseGuards(JwtAuthGuard)
+  async getAnalyticsPublic(@Query('days') days?: number) {
+    return this.paymentsService.getAnalytics(days || 30);
+  }
+
+  /**
    * Get manager's invoices
    */
   @Get('manager/my')
@@ -76,12 +74,32 @@ export class PaymentsController {
   }
 
   /**
-   * Get analytics
+   * Get invoices for a deal
    */
-  @Get('admin/analytics')
+  @Get('deal/:dealId')
   @UseGuards(JwtAuthGuard)
-  async getAnalytics(@Query('days') days?: number) {
-    return this.paymentsService.getAnalytics(days || 30);
+  async getDealInvoices(@Param('dealId') dealId: string) {
+    return this.paymentsService.getDealInvoices(dealId);
+  }
+
+  /**
+   * Get checkout session status
+   */
+  @Get('checkout/:sessionId/status')
+  @UseGuards(JwtAuthGuard)
+  async getCheckoutStatus(@Param('sessionId') sessionId: string) {
+    return this.paymentsService.getCheckoutStatus(sessionId);
+  }
+
+  // === PARAMETERIZED ROUTES LAST ===
+
+  /**
+   * Get invoice by ID
+   */
+  @Get(':invoiceId')
+  @UseGuards(JwtAuthGuard)
+  async getInvoice(@Param('invoiceId') invoiceId: string) {
+    return this.paymentsService.getInvoice(invoiceId);
   }
 
   // === CREATE/UPDATE ENDPOINTS ===
@@ -92,11 +110,19 @@ export class PaymentsController {
   @Post('create')
   @UseGuards(JwtAuthGuard)
   async createInvoice(@Body() dto: CreateInvoiceDto, @Req() req: any) {
-    // Set manager ID from token if not provided
     if (!dto.managerId) {
       dto.managerId = req.user.id;
     }
     return this.paymentsService.createInvoice(dto);
+  }
+
+  /**
+   * Create Stripe checkout session
+   */
+  @Post('checkout')
+  @UseGuards(JwtAuthGuard)
+  async createCheckout(@Body() dto: CreateCheckoutDto) {
+    return this.paymentsService.createCheckoutSession(dto);
   }
 
   /**
@@ -126,27 +152,7 @@ export class PaymentsController {
     return this.paymentsService.markAsPaid(invoiceId, req.user.id);
   }
 
-  // === CHECKOUT ENDPOINTS ===
-
-  /**
-   * Create Stripe checkout session
-   */
-  @Post('checkout')
-  @UseGuards(JwtAuthGuard)
-  async createCheckout(@Body() dto: CreateCheckoutDto) {
-    return this.paymentsService.createCheckoutSession(dto);
-  }
-
-  /**
-   * Get checkout session status
-   */
-  @Get('checkout/:sessionId/status')
-  @UseGuards(JwtAuthGuard)
-  async getCheckoutStatus(@Param('sessionId') sessionId: string) {
-    return this.paymentsService.getCheckoutStatus(sessionId);
-  }
-
-  // === WEBHOOK ENDPOINT ===
+  // === WEBHOOK ENDPOINT (no auth) ===
 
   /**
    * Stripe webhook handler

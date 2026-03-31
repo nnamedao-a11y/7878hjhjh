@@ -13,14 +13,7 @@ import { DealStep } from './payment-flow.schema';
 export class PaymentFlowController {
   constructor(private readonly paymentFlowService: PaymentFlowService) {}
 
-  /**
-   * Get payment flow state for a deal
-   */
-  @Get(':dealId')
-  @UseGuards(JwtAuthGuard)
-  async getFlowState(@Param('dealId') dealId: string) {
-    return this.paymentFlowService.getFlowStateOrThrow(dealId);
-  }
+  // === STATIC ROUTES FIRST ===
 
   /**
    * Get user's flow summary
@@ -32,20 +25,23 @@ export class PaymentFlowController {
   }
 
   /**
-   * Create flow state for a deal
+   * Get all blocked deals (admin)
    */
-  @Post(':dealId/init')
+  @Get('admin/blocked')
   @UseGuards(JwtAuthGuard)
-  async initFlowState(
-    @Param('dealId') dealId: string,
-    @Body() body: { userId: string; managerId?: string },
-    @Req() req: any,
-  ) {
-    return this.paymentFlowService.createFlowState({
-      dealId,
-      userId: body.userId,
-      managerId: body.managerId || req.user.id,
-    });
+  async getBlockedDeals() {
+    return this.paymentFlowService.getBlockedDeals();
+  }
+
+  // === PARAMETERIZED ROUTES ===
+
+  /**
+   * Get payment flow state for a deal
+   */
+  @Get(':dealId')
+  @UseGuards(JwtAuthGuard)
+  async getFlowState(@Param('dealId') dealId: string) {
+    return this.paymentFlowService.getFlowStateOrThrow(dealId);
   }
 
   /**
@@ -70,15 +66,6 @@ export class PaymentFlowController {
   }
 
   /**
-   * Mark contract as signed
-   */
-  @Patch(':dealId/contract-signed')
-  @UseGuards(JwtAuthGuard)
-  async markContractSigned(@Param('dealId') dealId: string) {
-    return this.paymentFlowService.markContractSigned(dealId);
-  }
-
-  /**
    * Check if tracking is active for a deal
    */
   @Get(':dealId/tracking-active')
@@ -89,11 +76,28 @@ export class PaymentFlowController {
   }
 
   /**
-   * Get all blocked deals (admin)
+   * Create flow state for a deal
    */
-  @Get('admin/blocked')
+  @Post(':dealId/init')
   @UseGuards(JwtAuthGuard)
-  async getBlockedDeals() {
-    return this.paymentFlowService.getBlockedDeals();
+  async initFlowState(
+    @Param('dealId') dealId: string,
+    @Body() body: { userId: string; managerId?: string },
+    @Req() req: any,
+  ) {
+    return this.paymentFlowService.createFlowState({
+      dealId,
+      userId: body.userId,
+      managerId: body.managerId || req.user.id,
+    });
+  }
+
+  /**
+   * Mark contract as signed
+   */
+  @Patch(':dealId/contract-signed')
+  @UseGuards(JwtAuthGuard)
+  async markContractSigned(@Param('dealId') dealId: string) {
+    return this.paymentFlowService.markContractSigned(dealId);
   }
 }

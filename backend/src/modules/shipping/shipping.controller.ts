@@ -12,7 +12,7 @@ import { ShippingService, CreateShipmentDto, UpdateShipmentDto, UpdateShipmentSt
 export class ShippingController {
   constructor(private readonly shippingService: ShippingService) {}
 
-  // === USER ENDPOINTS ===
+  // === STATIC ROUTES FIRST (before parameterized) ===
 
   /**
    * Get current user's shipments
@@ -22,35 +22,6 @@ export class ShippingController {
   async getMyShipments(@Req() req: any) {
     return this.shippingService.getUserShipments(req.user.id);
   }
-
-  /**
-   * Get shipment by ID
-   */
-  @Get(':shipmentId')
-  @UseGuards(JwtAuthGuard)
-  async getShipment(@Param('shipmentId') shipmentId: string) {
-    return this.shippingService.getShipment(shipmentId);
-  }
-
-  /**
-   * Get shipment by deal ID
-   */
-  @Get('deal/:dealId')
-  @UseGuards(JwtAuthGuard)
-  async getByDealId(@Param('dealId') dealId: string) {
-    return this.shippingService.getByDealId(dealId);
-  }
-
-  /**
-   * Get shipment by VIN
-   */
-  @Get('vin/:vin')
-  @UseGuards(JwtAuthGuard)
-  async getByVin(@Param('vin') vin: string) {
-    return this.shippingService.getByVin(vin);
-  }
-
-  // === ADMIN/MANAGER ENDPOINTS ===
 
   /**
    * Get all active shipments (admin)
@@ -71,6 +42,15 @@ export class ShippingController {
   }
 
   /**
+   * Get analytics
+   */
+  @Get('analytics')
+  @UseGuards(JwtAuthGuard)
+  async getAnalytics(@Query('days') days?: number) {
+    return this.shippingService.getAnalytics(days || 30);
+  }
+
+  /**
    * Get manager's shipments
    */
   @Get('manager/my')
@@ -80,12 +60,41 @@ export class ShippingController {
   }
 
   /**
-   * Get analytics
+   * Get shipment by deal ID
    */
-  @Get('admin/analytics')
+  @Get('deal/:dealId')
   @UseGuards(JwtAuthGuard)
-  async getAnalytics(@Query('days') days?: number) {
-    return this.shippingService.getAnalytics(days || 30);
+  async getByDealId(@Param('dealId') dealId: string) {
+    return this.shippingService.getByDealId(dealId);
+  }
+
+  /**
+   * Get shipment by VIN
+   */
+  @Get('vin/:vin')
+  @UseGuards(JwtAuthGuard)
+  async getByVin(@Param('vin') vin: string) {
+    return this.shippingService.getByVin(vin);
+  }
+
+  // === PARAMETERIZED ROUTES (must be last) ===
+
+  /**
+   * Get shipment events
+   */
+  @Get(':shipmentId/events')
+  @UseGuards(JwtAuthGuard)
+  async getEvents(@Param('shipmentId') shipmentId: string) {
+    return this.shippingService.getEvents(shipmentId);
+  }
+
+  /**
+   * Get shipment by ID
+   */
+  @Get(':shipmentId')
+  @UseGuards(JwtAuthGuard)
+  async getShipment(@Param('shipmentId') shipmentId: string) {
+    return this.shippingService.getShipment(shipmentId);
   }
 
   // === CREATE/UPDATE ENDPOINTS ===
@@ -96,11 +105,23 @@ export class ShippingController {
   @Post()
   @UseGuards(JwtAuthGuard)
   async createShipment(@Body() dto: CreateShipmentDto, @Req() req: any) {
-    // Set manager ID from token if not provided
     if (!dto.managerId) {
       dto.managerId = req.user.id;
     }
     return this.shippingService.createShipment(dto);
+  }
+
+  /**
+   * Add shipment event
+   */
+  @Post(':shipmentId/events')
+  @UseGuards(JwtAuthGuard)
+  async addEvent(
+    @Param('shipmentId') shipmentId: string,
+    @Body() dto: AddEventDto,
+    @Req() req: any,
+  ) {
+    return this.shippingService.addEvent(shipmentId, dto, req.user.id);
   }
 
   /**
@@ -157,30 +178,6 @@ export class ShippingController {
       body.vesselName, 
       req.user.id
     );
-  }
-
-  // === EVENT ENDPOINTS ===
-
-  /**
-   * Get shipment events
-   */
-  @Get(':shipmentId/events')
-  @UseGuards(JwtAuthGuard)
-  async getEvents(@Param('shipmentId') shipmentId: string) {
-    return this.shippingService.getEvents(shipmentId);
-  }
-
-  /**
-   * Add shipment event
-   */
-  @Post(':shipmentId/events')
-  @UseGuards(JwtAuthGuard)
-  async addEvent(
-    @Param('shipmentId') shipmentId: string,
-    @Body() dto: AddEventDto,
-    @Req() req: any,
-  ) {
-    return this.shippingService.addEvent(shipmentId, dto, req.user.id);
   }
 
   /**
